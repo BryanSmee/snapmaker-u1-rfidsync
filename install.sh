@@ -37,9 +37,13 @@ echo -e "Setting up variables.cfg..."
 touch "${BASE_DIR}/variables.cfg"
 chown ${USER_GROUP} "${BASE_DIR}/variables.cfg"
 
-# 5. Download 05_spoolman.cfg
-echo -e "Downloading 05_spoolman.cfg..."
-curl -fsSL "${BASE_URL}/05_spoolman.cfg" -o "${MOONRAKER_DIR}/05_spoolman.cfg"
+# 5. Download 05_spoolman.cfg (Skip if exists)
+if [ ! -f "${MOONRAKER_DIR}/05_spoolman.cfg" ]; then
+    echo -e "Downloading 05_spoolman.cfg..."
+    curl -fsSL "${BASE_URL}/05_spoolman.cfg" -o "${MOONRAKER_DIR}/05_spoolman.cfg"
+else
+    echo -e "${YELLOW}05_spoolman.cfg already exists. Skipping download to avoid overwriting your settings.${NC}"
+fi
 
 # 6. Download start_nfc_spool.sh
 echo -e "Downloading start_nfc_spool.sh..."
@@ -55,7 +59,7 @@ echo -e "${YELLOW}==============================================================
 
 echo -e "1. Edit your URLs:"
 echo -e "   - Open ${CYAN}${BASE_DIR}/nfc_spool_reader.py${NC} and update 'SPOOLMAN_API_BASE' to match your setup."
-echo -e "   - Open ${CYAN}${MOONRAKER_DIR}/05_spoolman.cfg${NC} and update the Spoolman URL to match your setup."
+echo -e "   - If you just downloaded ${CYAN}${MOONRAKER_DIR}/05_spoolman.cfg${NC}, update the Spoolman URL inside to match your setup."
 
 echo -e "\n2. Restart Klipper:"
 echo -e "   - Go to the Fluidd UI -> 'System' tab and Restart the Klipper service."
