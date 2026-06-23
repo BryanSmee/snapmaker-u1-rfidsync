@@ -1,0 +1,8 @@
+services:
+  rfid-remote-sync:
+    build: .
+    restart: always
+    volumes:
+      - ./config:/app/config
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

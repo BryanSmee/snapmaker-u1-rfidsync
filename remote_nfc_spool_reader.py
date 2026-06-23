@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 
 import requests
 
-CONFIG_PATH = "remote_spoolman_sync.cfg"
+CONFIG_PATH = "config/remote_spoolman_sync.cfg"
 
 # --- Configuration Setup ---
 config = configparser.ConfigParser()
