@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import configparser
 import json
 import logging
 import os
@@ -10,22 +11,68 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
-OPENRFID_LOG = "/home/lava/printer_data/logs/openrfid.log"
-MOONRAKER_GCODE_URL = "http://127.0.0.1:7125/printer/gcode/script"
-SPOOLMAN_API_BASE = "http://spoolman-ip:port/api/v1" # replace with your actual spoolman url
+CONFIG_PATH = "/home/lava/printer_data/config/extended/spoolman_sync.cfg"
 
-POLL_INTERVAL = 0.25
-REQUEST_TIMEOUT = 30
-DEDUP_SECONDS = 10.0
-START_AT_END = True
+# --- Configuration Setup ---
+config = configparser.ConfigParser()
+
+try:
+    if not os.path.exists(CONFIG_PATH):
+        os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
+        config["server"] = {
+            "moonraker_url": "http://127.0.0.1:7125/printer/gcode/script",
+            "spoolman_url": "http://spoolman-ip:7912/api/v1"
+        }
+        config["reader"] = {
+            "openrfid_log": "/home/lava/printer_data/logs/openrfid.log",
+            "poll_interval": "0.25",
+            "start_at_end": "True"
+        }
+        config["logging"] = {
+            "level": "INFO",
+            "raw_lines": "False"
+        }
+        config["advanced"] = {
+            "request_timeout": "30",
+            "dedup_seconds": "10.0",
+            "event_max_lines": "120",
+            "event_max_age_seconds": "10.0",
+            "assignment_retry_interval": "5.0"
+        }
+        with open(CONFIG_PATH, "w") as f:
+            config.write(f)
+    else:
+        config.read(CONFIG_PATH)
+except Exception as e:
+    print(f"Warning: Could not read or create config file {CONFIG_PATH}: {e}")
+    # Proceeding with defaults if config file fails
+
+def get_config_val(section, key, fallback, getter=config.get):
+    try:
+        if config.has_option(section, key):
+            return getter(section, key)
+    except Exception:
+        pass
+    return fallback
+
+# Load variables from config
+OPENRFID_LOG = get_config_val("reader", "openrfid_log", "/home/lava/printer_data/logs/openrfid.log")
+POLL_INTERVAL = get_config_val("reader", "poll_interval", 0.25, config.getfloat)
+START_AT_END = get_config_val("reader", "start_at_end", True, config.getboolean)
+
+MOONRAKER_GCODE_URL = get_config_val("server", "moonraker_url", "http://127.0.0.1:7125/printer/gcode/script")
+SPOOLMAN_API_BASE = get_config_val("server", "spoolman_url", "http://spoolman-ip:7912/api/v1")
+
+LOG_LEVEL = get_config_val("logging", "level", os.getenv("NFC_SPOOL_READER_LOG_LEVEL", "INFO")).upper()
+LOG_RAW_LINES = get_config_val("logging", "raw_lines", os.getenv("NFC_SPOOL_READER_LOG_RAW_LINES", "0") == "1", config.getboolean)
+
+REQUEST_TIMEOUT = get_config_val("advanced", "request_timeout", 30, config.getint)
+DEDUP_SECONDS = get_config_val("advanced", "dedup_seconds", 10.0, config.getfloat)
+EVENT_MAX_LINES = get_config_val("advanced", "event_max_lines", 120, config.getint)
+EVENT_MAX_AGE_SECONDS = get_config_val("advanced", "event_max_age_seconds", 10.0, config.getfloat)
+ASSIGNMENT_RETRY_INTERVAL = get_config_val("advanced", "assignment_retry_interval", 5.0, config.getfloat)
 
 VALID_CHANNELS = {0, 1, 2, 3}
-EVENT_MAX_LINES = 120
-EVENT_MAX_AGE_SECONDS = 10.0
-ASSIGNMENT_RETRY_INTERVAL = 5.0
-
-LOG_LEVEL = os.getenv("NFC_SPOOL_READER_LOG_LEVEL", "INFO").upper()
-LOG_RAW_LINES = os.getenv("NFC_SPOOL_READER_LOG_RAW_LINES", "0") == "1"
 
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL, logging.INFO),
@@ -219,6 +266,7 @@ class OpenRFIDLogWatcher:
 
             self._expire_event_if_needed()
 
+            # 1. Look for the JSON Payload first
             json_match = OPEN_SPOOL_JSON_RE.search(line)
             if json_match:
                 try:
@@ -233,6 +281,7 @@ class OpenRFIDLogWatcher:
                     logger.exception("Failed to parse OpenSpool payload: %r", json_match.group(1))
                 continue
 
+            # 2. Look for the channel/slot assignment line that follows
             slot = self._extract_slot(line)
             if slot is not None:
                 if self.current_event is None or self.current_event.payload is None:
@@ -375,6 +424,7 @@ class NFCSpoolReaderApp:
 
 def main() -> None:
     logger.info("Starting NFC Spool Reader")
+    logger.info("Using configuration from: %s", CONFIG_PATH)
     try:
         NFCSpoolReaderApp().run()
     except KeyboardInterrupt:
