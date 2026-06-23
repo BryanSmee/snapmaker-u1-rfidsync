@@ -10,9 +10,9 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
-KLIPPY_LOG = "/home/lava/printer_data/logs/klippy.log"
+OPENRFID_LOG = "/home/lava/printer_data/logs/openrfid.log"
 MOONRAKER_GCODE_URL = "http://127.0.0.1:7125/printer/gcode/script"
-SPOOLMAN_API_BASE = "http://spoolman-ip:port/api/v1" #replace with your actual spoolman url
+SPOOLMAN_API_BASE = "http://spoolman-ip:port/api/v1" # replace with your actual spoolman url
 
 POLL_INTERVAL = 0.25
 REQUEST_TIMEOUT = 30
@@ -33,9 +33,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger("nfc_spool_reader")
 
-NTAG_READ_RE = re.compile(r"NTAG read successful", re.IGNORECASE)
-CHANNEL_RE = re.compile(r"channel\[(\d+)\]", re.IGNORECASE)
 OPEN_SPOOL_JSON_RE = re.compile(r"OpenSpool JSON payload:\s*(\{.*\})", re.IGNORECASE)
+SLOT_RE = re.compile(r"on reader slot_(\d+)_reader", re.IGNORECASE)
 
 
 @dataclass
@@ -62,7 +61,7 @@ class OpenSpoolRecord:
 class PendingScanEvent:
     started_line_no: int
     started_monotonic: float
-    channel: Optional[int] = None
+    payload: Optional[Dict[str, Any]] = None
 
     def is_expired(self, current_line_no: int, now_monotonic: float) -> bool:
         return (
@@ -148,7 +147,7 @@ class SpoolmanClient:
             return False
 
 
-class KlippyLogWatcher:
+class OpenRFIDLogWatcher:
     def __init__(self, path: str, start_at_end: bool = True):
         self.path = path
         self.start_at_end = start_at_end
@@ -184,20 +183,14 @@ class KlippyLogWatcher:
             self.line_no, time.monotonic()
         ):
             logger.debug(
-                "Expiring incomplete NFC event at line=%s channel=%r",
+                "Expiring incomplete NFC event at line=%s",
                 self.line_no,
-                self.current_event.channel,
             )
             self.current_event = None
 
-    def _ensure_event(self) -> None:
-        if self.current_event is None:
-            self.current_event = PendingScanEvent(self.line_no, time.monotonic())
-            logger.debug("Created pending scan event at line=%s", self.line_no)
-
     @staticmethod
-    def _extract_channel(line: str) -> Optional[int]:
-        match = CHANNEL_RE.search(line)
+    def _extract_slot(line: str) -> Optional[int]:
+        match = SLOT_RE.search(line)
         if not match:
             return None
         try:
@@ -226,41 +219,35 @@ class KlippyLogWatcher:
 
             self._expire_event_if_needed()
 
-            if NTAG_READ_RE.search(line):
-                self.current_event = PendingScanEvent(self.line_no, time.monotonic())
-                logger.info("Detected NFC read event")
-                continue
-
-            channel = self._extract_channel(line)
-            if channel is not None:
-                self._ensure_event()
-                self.current_event.channel = channel
-                logger.debug("Detected channel assignment from log: channel=%s", channel)
-                continue
-
             json_match = OPEN_SPOOL_JSON_RE.search(line)
-            if not json_match:
+            if json_match:
+                try:
+                    payload = json.loads(json_match.group(1))
+                    self.current_event = PendingScanEvent(
+                        started_line_no=self.line_no, 
+                        started_monotonic=time.monotonic(), 
+                        payload=payload
+                    )
+                    logger.debug("Captured JSON payload, waiting for slot assignment...")
+                except Exception:
+                    logger.exception("Failed to parse OpenSpool payload: %r", json_match.group(1))
                 continue
 
-            try:
-                payload = json.loads(json_match.group(1))
-            except Exception:
-                logger.exception("Failed to parse OpenSpool payload: %r", json_match.group(1))
-                continue
+            slot = self._extract_slot(line)
+            if slot is not None:
+                if self.current_event is None or self.current_event.payload is None:
+                    logger.warning("Detected slot assignment (%s) but no JSON payload was captured recently", slot)
+                    continue
 
-            if self.current_event is None or self.current_event.channel is None:
-                logger.warning("Parsed payload but no channel was captured yet")
-                continue
-
-            record = OpenSpoolRecord(channel=self.current_event.channel, payload=payload)
-            logger.info(
-                "Parsed OpenSpool payload: channel=%s spool_id=%s",
-                record.channel,
-                record.spool_id,
-            )
-            logger.debug("Payload contents: %s", record.payload)
-            results.append(record)
-            self.current_event = None
+                record = OpenSpoolRecord(channel=slot, payload=self.current_event.payload)
+                logger.info(
+                    "Parsed OpenSpool payload: channel=%s spool_id=%s",
+                    record.channel,
+                    record.spool_id,
+                )
+                logger.debug("Payload contents: %s", record.payload)
+                results.append(record)
+                self.current_event = None
 
         return results
 
@@ -324,7 +311,7 @@ class NFCSpoolReaderApp:
     def __init__(self):
         self.spoolman = SpoolmanClient(SPOOLMAN_API_BASE)
         self.moonraker = MoonrakerClient(MOONRAKER_GCODE_URL)
-        self.watcher = KlippyLogWatcher(KLIPPY_LOG, start_at_end=START_AT_END)
+        self.watcher = OpenRFIDLogWatcher(OPENRFID_LOG, start_at_end=START_AT_END)
         self.deduper = Deduper(DEDUP_SECONDS)
         self.pending_assignments = PendingAssignments()
 
@@ -367,8 +354,8 @@ class NFCSpoolReaderApp:
                 )
 
     def run(self) -> None:
-        while not os.path.exists(KLIPPY_LOG):
-            logger.warning("Waiting for log file: %s", KLIPPY_LOG)
+        while not os.path.exists(OPENRFID_LOG):
+            logger.warning("Waiting for log file: %s", OPENRFID_LOG)
             time.sleep(1)
 
         self.watcher.open()
