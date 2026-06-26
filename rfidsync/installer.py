@@ -41,7 +41,7 @@ MANAGED_CONFIGS: tuple[ManagedConfig, ...] = (
         dest="extended/klipper/01_spoolman_klipper.cfg",
     ),
     ManagedConfig(
-        source="05_spoolman.cfg",
+        source="05_spoolman.cfg.tmpl",
         dest="extended/moonraker/05_spoolman.cfg",
         template=True,
     ),

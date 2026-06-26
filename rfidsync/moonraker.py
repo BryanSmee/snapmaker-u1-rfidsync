@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import requests
 
@@ -45,7 +46,7 @@ class MoonrakerClient:
 
     # --- File manager -----------------------------------------------------
 
-    def list_files(self, root: str) -> list[dict]:
+    def list_files(self, root: str) -> list[dict[str, Any]]:
         """Return the file listing for a Moonraker root (e.g. ``config``)."""
         resp = self.session.get(
             f"{self.base_url}/server/files/list",
@@ -53,8 +54,8 @@ class MoonrakerClient:
             timeout=self.timeout,
         )
         resp.raise_for_status()
-        result = resp.json().get("result", [])
-        return result if isinstance(result, list) else []
+        result: list[dict[str, Any]] = resp.json().get("result", [])
+        return result
 
     def file_exists(self, root: str, path: str) -> bool:
         """Whether ``path`` (relative to ``root``) exists in the file manager."""

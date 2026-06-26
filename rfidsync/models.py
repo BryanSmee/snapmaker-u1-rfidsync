@@ -12,7 +12,7 @@ class OpenSpoolRecord:
     """A resolved OpenSpool scan: a channel paired with a tag payload."""
 
     channel: int
-    payload: dict[str, Any]
+    payload: dict[str, Any] # TODO: Add proper structure for the payload, e.g. spool_id, filament_type, etc.
 
     @property
     def spool_id(self) -> int | None:

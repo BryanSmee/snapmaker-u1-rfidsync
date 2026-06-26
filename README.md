@@ -92,7 +92,7 @@ file API to keep these in sync with the versions shipped in the image:
 | File | Destination (Moonraker `config` root) |
 | --- | --- |
 | `01_spoolman_klipper.cfg` | `extended/klipper/01_spoolman_klipper.cfg` |
-| `05_spoolman.cfg` | `extended/moonraker/05_spoolman.cfg` (rendered from env vars) |
+| `05_spoolman.cfg.tmpl` | `extended/moonraker/05_spoolman.cfg` (rendered from env vars) |
 | `variables.cfg` | `extended/variables.cfg` (created empty **only if missing**) |
 
 Managed snippets are deleted and rewritten when their content differs.
