@@ -1,53 +1,138 @@
-With U1 extended firmware offering the ability to use nfc tags with the Openspool protocol, I wanted to find a way to automatically track filament usage without having to manually set spools or scan QR codes. This setup works by introducing a simple mapping layer between toolheads and spool IDs, then using that mapping to control Spoolman automatically.
+# Snapmaker U1 RFID Sync
 
-SUMMARY
+Automatically track filament usage on a Snapmaker U1 by syncing scanned
+OpenSpool NFC tags to [Spoolman](https://github.com/Donkie/Spoolman) — no
+manual spool selection or QR scanning.
 
-Each toolhead is associated with a fixed channel (e.g., extruder → channel 0, extruder1 → channel 1, etc.). Instead of attaching spool data directly to the toolhead or UI, each channel stores a spool ID in a persistent variable.
+This runs entirely **remotely** as a Docker container. It talks to the printer
+over the Klipper/Moonraker HTTP API: it watches the printer's `openrfid.log`,
+resolves each scanned tag to a Spoolman spool, and tells Klipper which spool is
+loaded on each channel. On boot it also installs the required Klipper/Moonraker
+config snippets onto the printer for you.
 
-When a spool is assigned to a channel (either manually or via NFC), the system:
-updates an in-memory state (SPOOL_STATE)
-saves the value to disk using SAVE_VARIABLE
-This ensures the mapping persists across restarts.
+## How it works
 
-Tool changes (T0–T3) are wrapped with macros so that whenever a tool is selected:
-the current extruder is mapped to its channel
-the channel’s stored spool ID is retrieved
-Spoolman is updated with that spool ID via a Moonraker API call
+Each toolhead maps to a fixed channel (`extruder` → 0 … `extruder3` → 3). Each
+channel stores a spool ID in a persistent Klipper variable, so the active spool
+follows the selected tool automatically and survives restarts.
 
-As a result, the active spool always follows the selected tool automatically.
+```
+NFC scan → openrfid.log → (this container) → Moonraker → Klipper → Spoolman
+```
 
-On startup, a delayed macro restores all saved channel-to-spool assignments back into memory. Optionally, a scan process (e.g., NFC) can update these assignments if a new spool is detected.
+1. The container polls `openrfid.log` through the Moonraker file API.
+2. When a tag is scanned, it parses the OpenSpool JSON payload and the slot it
+   was read on.
+3. It validates the spool ID against Spoolman.
+4. It calls `SET_CHANNEL_SPOOL` via Moonraker, which Klipper persists.
 
-Log Processing Flow
+## Requirements
 
-Klipper logs all macro execution and state changes to klippy.log. Moonraker monitors Klipper in real time via its API layer, exposing printer state and handling remote method calls (such as spoolman_set_active_spool). When macros trigger these calls, Moonraker forwards the updated spool information to Spoolman, which tracks usage and metadata. The UI (e.g., Fluidd) reads state from Moonraker, but in this setup it is not required for spool logic—data flows from Klipper → Moonraker → Spoolman, with klippy.log serving as the authoritative record for debugging and traceability.
+- [Extended firmware](https://github.com/paxx12/SnapmakerU1-Extended-Firmware)
+- A reachable [Spoolman](https://github.com/Donkie/Spoolman) instance.
+- OpenSpool NFC tags (e.g. written with
+  [spoolpainter](https://play.google.com/store/apps/details?id=com.spoolpainter.app)).
+  Any OEM tags must be physically removed — this only works with the OpenSpool
+  protocol.
+- Docker (and Docker Compose) on a host that can reach the printer's Moonraker
+  port (`7125`) and your Spoolman instance.
 
-See below for requirements/notes/limitations:
+## Running
 
-- You need to running extended firmware (https://github.com/paxx12/SnapmakerU1-Extended-Firmware)
-- This how-to assumes you have already installed spoolman (https://github.com/Donkie/Spoolman) and are writing your own nfc tags (I use spoolpainter https://play.google.com/store/apps/details?id=com.spoolpainter.app)
-- An easy way to sync spoolman filament profiles to orca/snorca is baze's great import tool (https://gitlab.com/baze/spoolman-orca-filament-profile-generator), not necessary but very nice indeed
-- This  only works with OpenSpool protocol. You need to physically remove any OEM nfc tags
-- Right now the script needs to be run manually after each reboot, looking into how it can be invoked on boot
-- The python script and gcode blocks were coded with AI so if there are any mistakes, blame ChatGPT
+### Docker Compose (recommended)
 
-And here are the various steps:
+Edit the environment in [`compose.yaml`](./compose.yaml) to point at your
+printer and Spoolman, then:
 
-1. Save the `01_spoolman_klipper.cfg` file to `/home/lava/printer_data/config/extended/klipper`. This is the main custom gcode block that tracks toolhead changes.
-2. Restart klipper service from fluidd ui System tab.
-3. Save the `nfc_spool_reader.py` file to `/home/lava/printer_data/config/extended`. This is the python script that syncs the active toolhead (and thus filament usage) to spoolman. Be sure to edit the `SPOOLMAN_API_BASE` url to align with your spoolman url.
-4. Run the command `chmod +x /home/lava/printer_data/config/extended/nfc_spool_reader.py` to make the script executable.
-5. Run the command `touch /home/lava/printer_data/config/extended/variables.cfg && chown lava:lava /home/lava/printer_data/config/extended/variables.cfg`. This command will create a file and assign user/group as lava:lava, this file is used to store spool data and allow it to persist between reboots.
-6. Save the `05_spoolman.cfg` file to `/home/lava/printer_data/config/extended/moonraker` and be sure to edit the spoolman url to match your setup. This tells moonraker where the spoolamn service is located.
-7. Modify the machine gcode to prevent it from changing toolhead assignments outside of the script.
-   - Click the pencil icon next to the printer name <img src="https://uploads.namegoeshere.net/u/I9shpf.png">
-   - Click the `Machine G-code` tab and then inside the `Machine start G-code` block scroll down about 80%, you are looking for the line that says `BED_MESH_CALIBRATE PROBE_COUNT`.
-   - Below the `BED_MESH_CALIBRATE PROBE_COUNT` line add `START_SPOOLMAN_TRACKING`, this will invoke the `START_SPOOLMAN_TRACKING` gcode macro from the custom gcode block we created in Step 1. <img src="https://uploads.namegoeshere.net/u/GOek0I.png">
-   - Scroll down to the `Change filament G-code` block and look for a line that says `"USE_CHANNEL CHANNEL=" + next_extruder + "`
-   - Delete the `"USE_CHANNEL CHANNEL=" + next_extruder + "` line and the line immediately below it (two lines highlighted in the screenshot). <img src="https://uploads.namegoeshere.net/u/F76xMC.png">
-8. Save the new machine profile. NOTE: you will have to use this profile for the script to work.
-9. Save the `start_nfc_spool.sh` file to `/home/lava/printer_data/config/extended`
-10. Run the command `chmod +x /home/lava/printer_data/config/extended/start_nfc_spool.sh` to make the script executable.
-11. To start the script run the command `sh /home/lava/printer_data/config/extended/start_nfc_spool.sh &`
-12. Check the log file to confirm the script is running: `tail -f /home/lava/printer_data/logs/nfc_spool_reader.log`
-13. In fluidd ui click the `Console` tab and run the command `START_SPOOLMAN_TRACKING` to clear any existing spools and read the nfc tags of any loaded spools followed by `SHOW_SPOOL_STATE` to confirm which spools are conisdered "loaded" by the script.
+```bash
+docker compose up -d
+```
+
+The image is published to GHCR, so you can also just pull it:
+
+```bash
+docker pull ghcr.io/bryansmee/snapmaker-u1-rfidsync:latest
+```
+
+### docker run
+
+```bash
+docker run -d --restart=always \
+  -e MOONRAKER_URL=http://<printer-ip>:7125 \
+  -e SPOOLMAN_URL=http://<spoolman-ip>:7912 \
+  ghcr.io/bryansmee/snapmaker-u1-rfidsync:latest
+```
+
+## Configuration
+
+All configuration is via environment variables.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `MOONRAKER_URL` | `http://localhost:7125` | Base URL of the printer's Moonraker. |
+| `SPOOLMAN_URL` | `http://spoolman:7912` | Base URL of Spoolman (no `/api`). |
+| `MOONRAKER_API_KEY` | _(none)_ | Sent as `X-Api-Key` if Moonraker auth is enabled. |
+| `SPOOLMAN_SYNC_RATE` | `5` | `sync_rate` written into the Moonraker spoolman config. |
+| `POLL_INTERVAL` | `3.0` | Seconds between log polls. |
+| `START_AT_END` | `true` | Ignore pre-existing log lines on startup. |
+| `LOG_LEVEL` | `INFO` | Python log level. |
+| `LOG_RAW_LINES` | `false` | Log every raw log line (very verbose). |
+| `INSTALL_CONFIGS` | `true` | Install the cfg snippets on boot. |
+| `RESTART_KLIPPER_AFTER_INSTALL` | `false` | Restart Klipper if a snippet changed. |
+| `REQUEST_TIMEOUT` | `30` | HTTP timeout (seconds). |
+| `DEDUP_SECONDS` | `10.0` | Suppress identical scans within this window. |
+| `EVENT_MAX_LINES` / `EVENT_MAX_AGE_SECONDS` | `120` / `10.0` | How long a payload waits for its slot line. |
+| `ASSIGNMENT_RETRY_INTERVAL` | `5.0` | Retry interval for assignments Klipper rejected. |
+
+## Config snippets installed on boot
+
+On startup (unless `INSTALL_CONFIGS=false`) the container uses the Moonraker
+file API to keep these in sync with the versions shipped in the image:
+
+| File | Destination (Moonraker `config` root) |
+| --- | --- |
+| `01_spoolman_klipper.cfg` | `extended/klipper/01_spoolman_klipper.cfg` |
+| `05_spoolman.cfg` | `extended/moonraker/05_spoolman.cfg` (rendered from env vars) |
+| `variables.cfg` | `extended/variables.cfg` (created empty **only if missing**) |
+
+Managed snippets are deleted and rewritten when their content differs.
+`variables.cfg` holds persistent spool state and is never overwritten.
+
+Because these change Klipper config, a Klipper restart is needed for them to
+take effect. This is **opt-in** via `RESTART_KLIPPER_AFTER_INSTALL=true` (only
+restarts when something actually changed) so the container never interrupts a
+running print unexpectedly. Otherwise, restart Klipper from the Fluidd
+**System** tab after the first run.
+
+## One-time slicer change
+
+The container handles everything on the printer side, but your slicer's machine
+G-code must stop reassigning channels itself:
+
+1. Edit the printer profile → **Machine G-code**.
+2. In **Machine start G-code**, find `BED_MESH_CALIBRATE PROBE_COUNT` and add
+   `START_SPOOLMAN_TRACKING` directly below it.
+3. In **Change filament G-code**, delete the line
+   `"USE_CHANNEL CHANNEL=" + next_extruder + "` and the line below it.
+4. Save the profile and use it for your prints.
+
+## Development
+
+```bash
+python -m venv .venv && . .venv/bin/activate
+pip install -e ".[dev]"
+pytest        # tests
+mypy rfidsync # type checking
+```
+
+The application lives in the [`rfidsync`](./rfidsync) package:
+
+- `config.py` — env-var configuration
+- `moonraker.py` / `spoolman.py` — HTTP clients
+- `watcher.py` — parses scans from `openrfid.log`
+- `installer.py` — boot-time cfg installation
+- `assignments.py` — dedup + retrying channel assignments
+- `app.py` — wiring and the poll loop
+
+> The original gcode blocks and parsing logic were AI-assisted; bug reports
+> welcome.
