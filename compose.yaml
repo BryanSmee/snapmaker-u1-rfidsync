@@ -1,8 +1,21 @@
 services:
   rfid-remote-sync:
+    # Pull the published image, or run `docker compose build` to build locally.
+    image: ghcr.io/bryansmee/snapmaker-u1-rfidsync:latest
     build: .
     restart: always
-    volumes:
-      - ./config:/app/config
+    environment:
+      # --- Required: point these at your printer and Spoolman ---
+      MOONRAKER_URL: "http://host.docker.internal:7125"
+      SPOOLMAN_URL: "http://host.docker.internal:7912"
+      # --- Optional tuning (defaults shown) ---
+      # SPOOLMAN_SYNC_RATE: "5"
+      # POLL_INTERVAL: "3.0"
+      # START_AT_END: "true"
+      # LOG_LEVEL: "INFO"
+      # LOG_RAW_LINES: "false"
+      # INSTALL_CONFIGS: "true"
+      # RESTART_KLIPPER_AFTER_INSTALL: "false"
+      # MOONRAKER_API_KEY: ""
     extra_hosts:
       - "host.docker.internal:host-gateway"
